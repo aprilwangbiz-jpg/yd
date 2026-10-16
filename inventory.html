@@ -642,7 +642,7 @@ fetch('inventory_data.json')
     panel.classList.add('open');
     if (!rec) { $('va-text').focus(); return; }
     if (listening) { rec.stop(); return; }
-    if (synth) synth.cancel();
+    if (synth) { synth.cancel(); synth.speak(new SpeechSynthesisUtterance('')); } // iOS: unlock speech inside the tap
     try { rec.start(); } catch (err) { showMsg(`Couldn’t start the mic: ${err.message}`); }
   };
 })();
