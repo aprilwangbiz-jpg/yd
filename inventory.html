@@ -629,8 +629,10 @@ fetch('inventory_data.json')
     rec.onend    = () => { listening = false; fab.classList.remove('listening'); if (heardEl.textContent === 'Listening…') heardEl.textContent = 'Didn’t catch that. Tap the mic to try again.'; };
     rec.onresult = e => ask(e.results[0][0].transcript);
     rec.onerror  = e => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed')
-        showMsg('Microphone access was blocked. Allow the mic in your browser’s site settings, or type your question below.');
+      if (e.error === 'service-not-allowed')
+        showMsg('Speech recognition is turned off on this device (code: service-not-allowed). On iPhone, turn on Siri and Dictation, or type your question below.');
+      else if (e.error === 'not-allowed')
+        showMsg('Microphone access was blocked (code: not-allowed). Allow the mic for this site in your browser settings, or type your question below.');
       else if (e.error === 'no-speech') heardEl.textContent = 'No speech heard. Tap the mic to try again.';
       else if (e.error !== 'aborted') showMsg(`Speech recognition error: ${e.error}. You can type your question below.`);
     };
