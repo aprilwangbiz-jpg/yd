@@ -379,8 +379,8 @@
   <tr>
     <th class="img-col"></th>
     <th onclick="sortBy(0)" class="item-col">Item <span class="arr">↕</span></th>
-    <th onclick="sortBy(1)" class="inv grp-start net-avail-col">Net Avail <span class="arr">↕</span></th>
-    <th onclick="sortBy(2)">Description <span class="arr">↕</span></th>
+    <th onclick="sortBy(1)">Description <span class="arr">↕</span></th>
+    <th onclick="sortBy(2)" class="inv grp-start net-avail-col">Net Avail <span class="arr">↕</span></th>
   </tr>
   </thead>
   <tbody id="tbody"></tbody>
@@ -415,16 +415,15 @@ function render(rows) {
     h += `<tr>
       ${imgCell}
       <td class="item-code">${r.item}</td>
-      <td class="inv grp-start${(r.net_avail || 0) <= 0 ? ' zero' : ''}">${fq(r.net_avail || 0)}</td>
       <td class="desc-cell">${r.desc}</td>
+      <td class="inv grp-start${(r.net_avail || 0) <= 0 ? ' zero' : ''}">${fq(r.net_avail || 0)}</td>
     </tr>`;
   });
   document.getElementById('tbody').innerHTML = h;
   document.getElementById('tfoot').innerHTML =
     `<tr>
-      <td colspan="2">Total — ${rows.length} items</td>
+      <td colspan="3">Total — ${rows.length} items</td>
       <td class="inv grp-start">${fq(tna)}</td>
-      <td></td>
     </tr>`;
   updateStats(rows);
 }
@@ -444,7 +443,7 @@ function sortBy(col) {
 }
 
 function applySort() {
-  const keys = ['item', 'net_avail', 'desc'];
+  const keys = ['item', 'desc', 'net_avail'];
   filtered.sort((a, b) => {
     const va = a[keys[sortCol]], vb = b[keys[sortCol]];
     return typeof va === 'string'
