@@ -494,6 +494,10 @@ fetch('inventory_data.json')
   .va-heard { color: #6b7a96; font-style: italic; min-height: 18px; margin-bottom: 6px; }
   .va-answer { background: #f7f5f2; border-left: 3px solid #22293a; border-radius: 3px;
     padding: 10px 12px; min-height: 44px; line-height: 1.45; margin-bottom: 10px; color: #22293a; }
+  .va-others { font-size: 0.75rem; color: #6b7a96; margin: -4px 0 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .va-others:empty { display: none; }
+  .va-others button { padding: 3px 10px; border: 1.5px solid #c8d0dc; border-radius: 20px; background: #fff; color: #22293a; font: inherit; font-weight: 600; cursor: pointer; }
+  .va-others button:hover { border-color: #b8892e; color: #b8892e; }
   .va-msg { color: #a5402d; font-size: 0.78rem; margin-bottom: 8px; display: none; }
   .va-msg.show { display: block; }
   .va-form { display: flex; gap: 6px; margin-bottom: 10px; }
@@ -515,6 +519,7 @@ fetch('inventory_data.json')
   <div class="va-msg" id="va-msg" role="alert"></div>
   <div class="va-heard" id="va-heard">Try “How many Conklin Duragraph do we have?”</div>
   <div class="va-answer" id="va-answer" aria-live="polite">—</div>
+  <div class="va-others" id="va-others"></div>
   <form class="va-form" id="va-form">
     <input id="va-text" type="text" placeholder="Or type a question…" aria-label="Type a question">
     <button type="submit">Ask</button>
@@ -531,43 +536,120 @@ fetch('inventory_data.json')
 
 <script>
 (() => {
-  // ── Answer logic (pure: uses DATA from the main script) ──
+  // ── Matching (pure: works on DATA rows {item, desc, net_avail}) ──
   const STOP = new Set(('a an the of for to is are do does we you i me my our have has how many much what whats ' +
     'can tell show find check please in stock left there any about on hand available avail net item items ' +
-    'quantity qty units us got carry sell').split(' '));
+    'quantity qty units us got carry sell number code sku it that this with and or still right now hey ok okay').split(' '));
+  const NUM = { zero: '0', oh: '0', o: '0', one: '1', won: '1', two: '2', to: '2', too: '2', three: '3', four: '4',
+    for: '4', fore: '4', five: '5', six: '6', seven: '7', eight: '8', ate: '8', nine: '9' };
 
+  const norm = s => String(s || '').toLowerCase().replace(/(\d),(\d)/g, '$1$2').replace(/[^a-z0-9]+/g, ' ').trim();
   const compact = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
-  // ponytail: token-overlap scoring over item+desc; swap for fuzzy matching if spoken SKUs miss often
-  function findBest(query, rows) {
-    const words = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w && !STOP.has(w));
-    if (!words.length) return null;
-    const joined = words.join('');               // "mv 4 1 2 3" spoken → "mv4123"
-    let best = null, bestScore = 0;
-    for (const r of rows) {
-      const code = compact(r.item), hay = (r.item + ' ' + r.desc).toLowerCase();
-      let score = words.filter(w => hay.includes(w)).length;
-      if (code && code === joined) score += 10;
-      else if (joined.length >= 3 && code.includes(joined)) score += 5;
-      if (score > bestScore) { best = r; bestScore = score; }
+  // Speech engines spell item numbers digit by digit: "seven one 9 one five" → "71915"
+  function voicePrep(q) {
+    const parts = norm(q).split(' ').filter(p => p !== 'dash' && p !== 'hyphen');
+    const out = [];
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i], d = NUM[p];
+      const nextIsDigit = i + 1 < parts.length && (/^\d+$/.test(parts[i + 1]) || NUM[parts[i + 1]] !== undefined);
+      const prevIsDigit = out.length && /^\d+$/.test(out[out.length - 1]);
+      const homophone = /^(to|too|for|fore|won|ate|oh|o)$/.test(p);  // only a digit when it follows one
+      const digit = /^\d+$/.test(p) ? p : (d !== undefined && (prevIsDigit || (!homophone && nextIsDigit)) ? d : null);
+      if (digit !== null && prevIsDigit) out[out.length - 1] += digit;
+      else out.push(digit !== null ? digit : p);
     }
-    return bestScore > 0 ? best : null;
+    return out.join(' ');
   }
 
-  function answerFor(query, rows) {
-    if (!rows.length) return { text: 'Inventory is still loading. Try again in a moment.' };
-    const r = findBest(query, rows);
-    if (!r) return { text: `I couldn’t find an item matching “${query}”.` };
-    const qty = r.net_avail || 0;
-    const who = r.desc ? `${r.desc} (${r.item})` : r.item;
-    return { text: qty > 0 ? `${who}: ${qty.toLocaleString('en-US')} available.` : `${who} is out of stock.`, row: r };
+  function lev(a, b, max) {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i]; let best = i;
+      for (let j = 1; j <= b.length; j++) {
+        cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        if (cur[j] < best) best = cur[j];
+      }
+      if (best > max) return max + 1;
+      prev = cur;
+    }
+    return prev[b.length];
   }
-  window.__vaAnswerFor = answerFor; // exposed for quick console checks
+
+  // Index is rebuilt only when the DATA array changes.
+  let idx = null;
+  function indexFor(rows) {
+    if (idx && idx.rows === rows) return idx;
+    const df = Object.create(null);
+    const entries = rows.map(r => {
+      const toks = new Set(norm(r.item + ' ' + r.desc).split(' ').filter(Boolean));
+      toks.forEach(t => { df[t] = (df[t] || 0) + 1; });
+      return { r, toks, code: compact(r.item) };
+    });
+    const vocab = Object.keys(df).filter(t => t.length >= 4 && !/^\d+$/.test(t));
+    idx = { rows, entries, df, vocab, n: rows.length };
+    return idx;
+  }
+  const idf = (ix, t) => Math.log(1 + ix.n / (ix.df[t] || 0.5));
+
+  // ponytail: IDF + edit-distance scoring; swap for phonetic keys if names still miss
+  function rank(query, rows) {
+    const ix = indexFor(rows);
+    const words = voicePrep(query).split(' ').filter(w => w && !STOP.has(w));
+    if (!words.length) return [];
+    const joined = words.join('');
+    const expand = words.map(w => {                       // word → [[vocab token, weight]]
+      if (ix.df[w]) return [[w, idf(ix, w)]];
+      if (w.length < 4 || /^\d+$/.test(w)) return [];
+      const max = w.length >= 7 ? 2 : 1;
+      return ix.vocab.filter(v => lev(w, v, max) <= max).map(v => [v, 0.7 * idf(ix, v)]);
+    });
+    const scored = [];
+    for (const e of ix.entries) {
+      let s = 0;
+      words.forEach((w, i) => {
+        let best = 0;
+        for (const [t, wt] of expand[i]) if (e.toks.has(t) && wt > best) best = wt;
+        if (!best && /^\d{3,}$/.test(w) && e.code.includes(w)) best = idf(ix, w) || 3;
+        s += best;
+      });
+      if (e.code && e.code === joined) s += 20;
+      else if (words.some(w => w.length >= 3 && compact(w) === e.code)) s += 15;
+      if (s > 0) scored.push({ r: e.r, s });
+    }
+    return scored.sort((a, b) => b.s - a.s || a.r.desc.length - b.r.desc.length);
+  }
+
+  // Try every alternative the recognizer heard; keep the one with the strongest match.
+  function bestOf(alternatives, rows) {
+    let pick = { heard: alternatives[0] || '', ranked: [] };
+    for (const heard of alternatives) {
+      const ranked = rank(heard, rows);
+      if (ranked.length && (!pick.ranked.length || ranked[0].s > pick.ranked[0].s)) pick = { heard, ranked };
+    }
+    return pick;
+  }
+
+  const sayRow = r => {
+    const qty = r.net_avail || 0, who = r.desc ? `${r.desc} (${r.item})` : r.item;
+    return qty > 0 ? `${who}: ${qty.toLocaleString('en-US')} available.` : `${who} is out of stock.`;
+  };
+
+  function answerFor(alternatives, rows) {
+    if (!rows.length) return { text: 'Inventory is still loading. Try again in a moment.', heard: alternatives[0] };
+    const { heard, ranked } = bestOf(alternatives, rows);
+    if (!ranked.length) return { text: `I couldn’t find an item matching “${heard}”.`, heard };
+    const top = ranked[0];
+    const close = ranked.slice(1, 4).filter(x => x.s >= top.s * 0.85).map(x => x.r);
+    return { text: sayRow(top.r), row: top.r, others: close, heard };
+  }
+  window.__vaAnswerFor = (q, rows) => answerFor([].concat(q), rows); // exposed for quick console checks
 
   // ── DOM wiring ──
   const $ = id => document.getElementById(id);
   const fab = $('va-fab'), panel = $('va-panel'), answerEl = $('va-answer'), heardEl = $('va-heard'), msgEl = $('va-msg');
-  const voiceSel = $('va-voice'), rateSel = $('va-rate');
+  const othersEl = $('va-others'), voiceSel = $('va-voice'), rateSel = $('va-rate');
   const KEY_VOICE = 'yafaInventory.voice.name', KEY_RATE = 'yafaInventory.voice.rate';
   const store = {
     get: k => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -575,6 +657,9 @@ fetch('inventory_data.json')
   };
   const synth = window.speechSynthesis;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const SGL = window.SpeechGrammarList || window.webkitSpeechGrammarList;
+  const standalone = window.navigator.standalone === true ||
+    (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
 
   function showMsg(text) { msgEl.textContent = text; msgEl.classList.toggle('show', !!text); }
 
@@ -605,47 +690,94 @@ fetch('inventory_data.json')
     synth.speak(u);
   }
 
-  function ask(query) {
-    query = query.trim();
-    if (!query) return;
-    heardEl.textContent = `“${query}”`;
-    const { text, row } = answerFor(query, DATA);
+  function showRow(r) {                       // answer + show the matched row in the table
+    answerEl.textContent = sayRow(r);
+    speak(sayRow(r));
+    $('search').value = r.item; filterTable();
+  }
+
+  function ask(alternatives) {
+    alternatives = [].concat(alternatives).map(s => String(s).trim()).filter(Boolean);
+    if (!alternatives.length) return;
+    const { text, row, others = [], heard } = answerFor(alternatives, DATA);
+    heardEl.textContent = `“${heard}”`;
     answerEl.textContent = text;
     speak(text);
-    if (row) { $('search').value = row.item; filterTable(); }   // show the matched row in the table
+    othersEl.innerHTML = '';
+    if (others.length) {
+      othersEl.append('Did you mean: ');
+      others.forEach(r => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = r.item; b.title = r.desc;
+        b.onclick = () => { othersEl.innerHTML = ''; showRow(r); };
+        othersEl.append(b);
+      });
+    }
+    if (row) { $('search').value = row.item; filterTable(); }
   }
 
   $('va-form').onsubmit = e => { e.preventDefault(); ask($('va-text').value); $('va-text').value = ''; };
-  $('va-close').onclick = () => { panel.classList.remove('open'); if (listening) rec.stop(); };
+  $('va-close').onclick = () => { panel.classList.remove('open'); if (rec) rec.abort(); };
 
   // ── Speech recognition (or text-only fallback) ──
-  let rec = null, listening = false;
-  if (SR) {
-    rec = new SR();
+  let rec = null, hints = null;
+  function grammarHints() {                   // most common catalog words, so brand/model names are recognised
+    if (hints || !DATA.length) return hints;
+    const ix = indexFor(DATA);
+    hints = ix.vocab.filter(t => /^[a-z]+$/.test(t) && !STOP.has(t))
+      .sort((a, b) => ix.df[b] - ix.df[a]).slice(0, 200);
+    return hints;
+  }
+
+  function startListening() {
+    rec = new SR();                           // fresh recognizer per tap: more reliable on iOS
     rec.lang = 'en-US';
-    rec.interimResults = false;
-    rec.maxAlternatives = 1;
-    rec.onstart  = () => { listening = true;  fab.classList.add('listening'); heardEl.textContent = 'Listening…'; showMsg(''); };
-    rec.onend    = () => { listening = false; fab.classList.remove('listening'); if (heardEl.textContent === 'Listening…') heardEl.textContent = 'Didn’t catch that. Tap the mic to try again.'; };
-    rec.onresult = e => ask(e.results[0][0].transcript);
-    rec.onerror  = e => {
-      if (e.error === 'service-not-allowed')
+    rec.interimResults = true;
+    rec.maxAlternatives = 8;
+    rec.continuous = false;
+    const h = SGL && grammarHints();
+    if (h && h.length) {
+      try { const gl = new SGL(); gl.addFromString('#JSGF V1.0; grammar yafa; public <term> = ' + h.join(' | ') + ' ;', 1); rec.grammars = gl; } catch {}
+    }
+    let finals = [];
+    rec.onstart  = () => { fab.classList.add('listening'); heardEl.textContent = 'Listening…'; showMsg(''); othersEl.innerHTML = ''; };
+    rec.onresult = e => {
+      const alts = []; let interim = '';
+      for (const res of e.results) {
+        if (res.isFinal) for (let a = 0; a < res.length; a++) alts[a] = ((alts[a] || '') + ' ' + res[a].transcript).trim();
+        else interim += ' ' + res[0].transcript;
+      }
+      if (alts.length) finals = alts;
+      if (interim.trim()) heardEl.textContent = interim.trim() + '…';
+    };
+    rec.onend = () => {
+      fab.classList.remove('listening');
+      rec = null;
+      if (finals.length) ask(finals);
+      else if (heardEl.textContent === 'Listening…' || heardEl.textContent.endsWith('…'))
+        heardEl.textContent = 'Didn’t catch that. Tap the mic to try again.';
+    };
+    rec.onerror = e => {
+      if (standalone && (e.error === 'not-allowed' || e.error === 'service-not-allowed'))
+        showMsg('Voice is blocked when this page is opened from a Home Screen icon on iPhone. Open it in Safari, or type your question below.');
+      else if (e.error === 'service-not-allowed')
         showMsg('Speech recognition is turned off on this device (code: service-not-allowed). On iPhone, turn on Siri and Dictation, or type your question below.');
       else if (e.error === 'not-allowed')
         showMsg('Microphone access was blocked (code: not-allowed). Allow the mic for this site in your browser settings, or type your question below.');
       else if (e.error === 'no-speech') heardEl.textContent = 'No speech heard. Tap the mic to try again.';
       else if (e.error !== 'aborted') showMsg(`Speech recognition error: ${e.error}. You can type your question below.`);
     };
-  } else {
-    showMsg('Voice input isn’t supported in this browser (try Chrome or Edge). Type your question below; answers are still read aloud.');
+    try { rec.start(); } catch (err) { rec = null; showMsg(`Couldn’t start the mic: ${err.message}`); }
   }
+
+  if (!SR) showMsg('Voice input isn’t supported in this browser (try Safari or Chrome). Type your question below; answers are still read aloud.');
 
   fab.onclick = () => {
     panel.classList.add('open');
-    if (!rec) { $('va-text').focus(); return; }
-    if (listening) { rec.stop(); return; }
+    if (!SR) { $('va-text').focus(); return; }
+    if (rec) { rec.stop(); return; }
     if (synth) { synth.cancel(); synth.speak(new SpeechSynthesisUtterance('')); } // iOS: unlock speech inside the tap
-    try { rec.start(); } catch (err) { showMsg(`Couldn’t start the mic: ${err.message}`); }
+    startListening();
   };
 })();
 </script>
