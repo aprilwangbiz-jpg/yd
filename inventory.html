@@ -472,7 +472,7 @@ fetch('inventory_data.json')
 <!-- ── Voice Assistant (Web Speech API, self-contained) ───────── -->
 <style>
   .va-fab {
-    position: fixed; right: 24px; bottom: 24px; z-index: 300;
+    position: fixed; right: 90px; bottom: calc(40px + env(safe-area-inset-bottom)); z-index: 300;
     width: 58px; height: 58px; border-radius: 50%; border: 2px solid #e8d9b4; cursor: pointer;
     background: #22293a; color: #e8d9b4; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
     display: flex; align-items: center; justify-content: center; transition: transform 0.1s, background 0.2s;
@@ -483,7 +483,7 @@ fetch('inventory_data.json')
   .va-fab.listening { background: #b8892e; color: #fff; animation: va-pulse 1s infinite; }
   @keyframes va-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(184,137,46,0.6); } 50% { box-shadow: 0 0 0 12px rgba(184,137,46,0); } }
   .va-panel {
-    position: fixed; right: 24px; bottom: 96px; z-index: 300; width: 340px; max-width: calc(100vw - 32px);
+    position: fixed; right: 24px; bottom: calc(112px + env(safe-area-inset-bottom)); z-index: 300; width: 340px; max-width: calc(100vw - 32px);
     background: #fff; border-top: 3px solid #b8892e; border-radius: 4px;
     box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 14px; display: none; font-size: 0.84rem;
   }
@@ -504,7 +504,7 @@ fetch('inventory_data.json')
   .va-settings { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center;
     font-size: 0.75rem; color: #6b7a96; }
   .va-settings select { width: 100%; min-width: 0; padding: 4px; font: inherit; border: 1.5px solid #c8d0dc; border-radius: 3px; }
-  @media (max-width: 600px) { .va-fab, .va-panel { right: 16px; } }
+  @media (max-width: 600px) { .va-fab { right: 72px; } .va-panel { right: 16px; } }
 </style>
 
 <button class="va-fab" id="va-fab" aria-label="Voice assistant: tap to ask" title="Ask by voice">
